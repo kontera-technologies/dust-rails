@@ -1,780 +1,848 @@
 //
-// Dust - Asynchronous Templating v1.0.0
+// Dust - Asynchronous Templating v2.2.3
 // http://akdubya.github.com/dustjs
 //
 // Copyright (c) 2010, Aleksander Williams
 // Released under the MIT License.
 //
 
+/*global console */
 var dust = {};
 
-function getGlobal(){	
-  return (function(){	
-    return this.dust;	
-      }).call(null);
+function getGlobal(){
+  return (function(){
+    return this.dust;
+  }).call(null);
 }
 
 (function(dust) {
 
-dust.cache = {};
-
-dust.register = function(name, tmpl) {
-  if (!name) return;
-  dust.cache[name] = tmpl;
-};
-
-dust.render = function(name, context, callback) {
-  var chunk = new Stub(callback).head;
-  dust.load(name, chunk, Context.wrap(context)).end();
-};
-
-dust.stream = function(name, context) {
-  var stream = new Stream();
-  dust.nextTick(function() {
-    dust.load(name, stream.head, Context.wrap(context)).end();
-  });
-  return stream;
-};
-
-dust.renderSource = function(source, context, callback) {
-  return dust.compileFn(source)(context, callback);
-};
-
-dust.compileFn = function(source, name) {
-  var tmpl = dust.loadSource(dust.compile(source, name));
-  return function(context, callback) {
-    var master = callback ? new Stub(callback) : new Stream();
-    dust.nextTick(function() {
-      tmpl(master.head, Context.wrap(context)).end();
-    });
-    return master;
+  if(!dust) {
+    return;
   }
-};
+  var ERROR = 'ERROR',
+      WARN = 'WARN',
+      INFO = 'INFO',
+      DEBUG = 'DEBUG',
+      levels = [DEBUG, INFO, WARN, ERROR],
+      logger = function() {};
 
-dust.load = function(name, chunk, context) {
-  var tmpl = dust.cache[name];
-  if (tmpl) {
-    return tmpl(chunk, context);
-  } else {
-    if (dust.onLoad) {
-      return chunk.map(function(chunk) {
-        dust.onLoad(name, function(err, src) {
-          if (err) return chunk.setError(err);
-          if (!dust.cache[name]) dust.loadSource(dust.compile(src, name));
-          dust.cache[name](chunk, context).end();
-        });
-      });
+  dust.isDebug = false;
+  dust.debugLevel = INFO;
+
+  // Try to find the console logger in window scope (browsers) or top level scope (node.js)
+  if (typeof window !== 'undefined' && window && window.console && window.console.log) {
+    logger = window.console.log;
+  } else if (typeof console !== 'undefined' && console && console.log) {
+    logger = console.log;
+  }
+
+  /**
+   * If dust.isDebug is true, Log dust debug statements, info statements, warning statements, and errors.
+   * This default implementation will print to the console if it exists.
+   * @param {String} message the message to print
+   * @param {String} type the severity of the message(ERROR, WARN, INFO, or DEBUG)
+   * @public
+   */
+  dust.log = function(message, type) {
+    var type = type || INFO;
+    if(dust.isDebug && levels.indexOf(type) >= levels.indexOf(dust.debugLevel)) {
+      if(!dust.logQueue) {
+        dust.logQueue = [];
+      }
+      dust.logQueue.push({message: message, type: type});
+      logger.call(console || window.console, '[DUST ' + type + ']: ' + message);
     }
-    return chunk.setError(new Error("Template Not Found: " + name));
-  }
-};
-
-dust.loadSource = function(source, path) {
-  return eval(source);
-};
-
-if (Array.isArray) {
-  dust.isArray = Array.isArray;
-} else {
-  dust.isArray = function(arr) {
-    return Object.prototype.toString.call(arr) == "[object Array]";
   };
-}
 
-dust.nextTick = (function() {
-  if (typeof process !== "undefined") {
-    return process.nextTick;
-  } else {
-    return function(callback) {
-      setTimeout(callback,0);
-    }
-  }
-} )();
-
-dust.isEmpty = function(value) {
-  if (dust.isArray(value) && !value.length) return true;
-  if (value === 0) return false;
-  return (!value);
-};
-
-dust.filter = function(string, auto, filters) {
-  if (filters) {
-    for (var i=0, len=filters.length; i<len; i++) {
-      var name = filters[i];
-      if (name === "s") {
-        auto = null;
-      } else {
-        string = dust.filters[name](string);
-      }
-    }
-  }
-  if (auto) {
-    string = dust.filters[auto](string);
-  }
-  return string;
-};
-
-dust.filters = {
-  h: function(value) { return dust.escapeHtml(value); },
-  j: function(value) { return dust.escapeJs(value); },
-  u: encodeURI,
-  uc: encodeURIComponent,
-  js: function(value) { if (!JSON) { return value; } return JSON.stringify(value); },
-  jp: function(value) { if (!JSON) { return value; } return JSON.parse(value); }
-};
-
-function Context(stack, global, blocks) {
-  this.stack  = stack;
-  this.global = global;
-  this.blocks = blocks;
-}
-
-dust.makeBase = function(global) {
-  return new Context(new Stack(), global);
-};
-
-Context.wrap = function(context) {
-  if (context instanceof Context) {
-    return context;
-  }
-  return new Context(new Stack(context));
-};
-
-Context.prototype.get = function(key) {
-  var ctx = this.stack, value;
-
-  while(ctx) {
-    if (ctx.isObject) {
-      value = ctx.head[key];
-      if (!(value === undefined)) {
-        return value;
-      }
-    }
-    ctx = ctx.tail;
-  }
-  return this.global ? this.global[key] : undefined;
-};
-
-Context.prototype.getPath = function(cur, down) {
-  var ctx = this.stack,
-      len = down.length;
-
-  if (cur && len === 0) return ctx.head;
-  ctx = ctx.head;
-  var i = 0;
-  while(ctx && i < len) {
-    ctx = ctx[down[i]];
-    i++;
-  }
-  return ctx;
-};
-
-Context.prototype.push = function(head, idx, len) {
-  return new Context(new Stack(head, this.stack, idx, len), this.global, this.blocks);
-};
-
-Context.prototype.rebase = function(head) {
-  return new Context(new Stack(head), this.global, this.blocks);
-};
-
-Context.prototype.current = function() {
-  return this.stack.head;
-};
-
-Context.prototype.getBlock = function(key, chk, ctx) {
-  if (typeof key === "function") {
-    key = key(chk, ctx).data;
-    chk.data = "";
-  }
-
-  var blocks = this.blocks;
-
-  if (!blocks) return;
-  var len = blocks.length, fn;
-  while (len--) {
-    fn = blocks[len][key];
-    if (fn) return fn;
-  }
-};
-
-Context.prototype.shiftBlocks = function(locals) {
-  var blocks = this.blocks;
-
-  if (locals) {
-    if (!blocks) {
-      newBlocks = [locals];
+  /**
+   * If debugging is turned on(dust.isDebug=true) log the error message and throw it.
+   * Otherwise try to keep rendering.  This is useful to fail hard in dev mode, but keep rendering in production.
+   * @param {Error} error the error message to throw
+   * @param {Object} chunk the chunk the error was thrown from
+   * @public
+   */
+  dust.onError = function(error, chunk) {
+    dust.log(error.message || error, ERROR);
+    if(dust.isDebug) {
+      throw error;
     } else {
-      newBlocks = blocks.concat([locals]);
-    }
-    return new Context(this.stack, this.global, newBlocks);
-  }
-  return this;
-};
-
-function Stack(head, tail, idx, len) {
-  this.tail = tail;
-  this.isObject = !dust.isArray(head) && head && typeof head === "object";
-  this.head = head;
-  this.index = idx;
-  this.of = len;
-}
-
-function Stub(callback) {
-  this.head = new Chunk(this);
-  this.callback = callback;
-  this.out = '';
-}
-
-Stub.prototype.flush = function() {
-  var chunk = this.head;
-
-  while (chunk) {
-    if (chunk.flushable) {
-      this.out += chunk.data;
-    } else if (chunk.error) {
-      this.callback(chunk.error);
-      this.flush = function() {};
-      return;
-    } else {
-      return;
-    }
-    chunk = chunk.next;
-    this.head = chunk;
-  }
-  this.callback(null, this.out);
-};
-
-function Stream() {
-  this.head = new Chunk(this);
-}
-
-Stream.prototype.flush = function() {
-  var chunk = this.head;
-
-  while(chunk) {
-    if (chunk.flushable) {
-      this.emit('data', chunk.data);
-    } else if (chunk.error) {
-      this.emit('error', chunk.error);
-      this.flush = function() {};
-      return;
-    } else {
-      return;
-    }
-    chunk = chunk.next;
-    this.head = chunk;
-  }
-  this.emit('end');
-};
-
-Stream.prototype.emit = function(type, data) {
-  if (!this.events) return false;
-  var handler = this.events[type];
-  if (!handler) return false;
-  if (typeof handler == 'function') {
-    handler(data);
-  } else {
-    var listeners = handler.slice(0);
-    for (var i = 0, l = listeners.length; i < l; i++) {
-      listeners[i](data);
-    }
-  }
-};
-
-Stream.prototype.on = function(type, callback) {
-  if (!this.events) {
-    this.events = {};
-  }
-  if (!this.events[type]) {
-    this.events[type] = callback;
-  } else if(typeof this.events[type] === 'function') {
-    this.events[type] = [this.events[type], callback];
-  } else {
-    this.events[type].push(callback);
-  }
-  return this;
-};
-
-Stream.prototype.pipe = function(stream) {
-  this.on("data", function(data) {
-    stream.write(data, "utf8");
-  }).on("end", function() {
-    stream.end();
-  }).on("error", function(err) {
-    stream.error(err);
-  });
-  return this;
-};
-
-function Chunk(root, next, taps) {
-  this.root = root;
-  this.next = next;
-  this.data = '';
-  this.flushable = false;
-  this.taps = taps;
-}
-
-Chunk.prototype.write = function(data) {
-  var taps  = this.taps;
-
-  if (taps) {
-    data = taps.go(data);
-  }
-  this.data += data;
-  return this;
-};
-
-Chunk.prototype.end = function(data) {
-  if (data) {
-    this.write(data);
-  }
-  this.flushable = true;
-  this.root.flush();
-  return this;
-};
-
-Chunk.prototype.map = function(callback) {
-  var cursor = new Chunk(this.root, this.next, this.taps),
-      branch = new Chunk(this.root, cursor, this.taps);
-
-  this.next = branch;
-  this.flushable = true;
-  callback(branch);
-  return cursor;
-};
-
-Chunk.prototype.tap = function(tap) {
-  var taps = this.taps;
-
-  if (taps) {
-    this.taps = taps.push(tap);
-  } else {
-    this.taps = new Tap(tap);
-  }
-  return this;
-};
-
-Chunk.prototype.untap = function() {
-  this.taps = this.taps.tail;
-  return this;
-};
-
-Chunk.prototype.render = function(body, context) {
-  return body(this, context);
-};
-
-Chunk.prototype.reference = function(elem, context, auto, filters) {
-  if (typeof elem === "function") {
-    elem.isReference = true;
-    // Changed the function calling to use apply with the current context to make sure that "this" is wat we expect it to be inside the function
-    elem = elem.apply(context.current(), [this, context, null, {auto: auto, filters: filters}]);
-    if (elem instanceof Chunk) {
-      return elem;
-    }
-  }
-  if (!dust.isEmpty(elem)) {
-    return this.write(dust.filter(elem, auto, filters));
-  } else {
-    return this;
-  }
-};
-
-Chunk.prototype.section = function(elem, context, bodies, params) {
-  if (typeof elem === "function") {
-    elem = elem.apply(context.current(), [this, context, bodies, params]);
-    if (elem instanceof Chunk) {
-      return elem;
-    }
-  }
-
-  var body = bodies.block,
-      skip = bodies['else'];
-
-  if (params) {
-    context = context.push(params);
-  }
-
-  if (dust.isArray(elem)) {
-    if (body) {
-      var len = elem.length, chunk = this;
-      context.stack.head['$len'] = len;
-      for (var i=0; i<len; i++) {
-        context.stack.head['$idx'] = i;
-        chunk = body(chunk, context.push(elem[i], i, len));
-      }
-      context.stack.head['$idx'] = undefined;
-      context.stack.head['$len'] = undefined;
       return chunk;
     }
-  } else if (elem === true) {
-    if (body) return body(this, context);
-  } else if (elem || elem === 0) {
-    if (body) {
-      context.stack.head['$idx'] = 0;
-      context.stack.head['$len'] = 1;
-      chunk = body(this, context.push(elem));
-      context.stack.head['$idx'] = undefined;
-      context.stack.head['$len'] = undefined;
-      return chunk;
+  };
+
+  dust.helpers = {};
+
+  dust.cache = {};
+
+  dust.register = function(name, tmpl) {
+    if (!name) {
+      return;
     }
-  } else if (skip) {
-    return skip(this, context);
-  }
-  return this;
-};
+    dust.cache[name] = tmpl;
+  };
 
-Chunk.prototype.exists = function(elem, context, bodies) {
-  var body = bodies.block,
-      skip = bodies['else'];
+  dust.render = function(name, context, callback) {
+    var chunk = new Stub(callback).head;
+    try {
+      dust.load(name, chunk, Context.wrap(context, name)).end();
+    } catch (err) {
+      dust.onError(err, chunk);
+    }
+  };
 
-  if (!dust.isEmpty(elem)) {
-    if (body) return body(this, context);
-  } else if (skip) {
-    return skip(this, context);
-  }
-  return this;
-};
-
-Chunk.prototype.notexists = function(elem, context, bodies) {
-  var body = bodies.block,
-      skip = bodies['else'];
-
-  if (dust.isEmpty(elem)) {
-    if (body) return body(this, context);
-  } else if (skip) {
-    return skip(this, context);
-  }
-  return this;
-};
-
-Chunk.prototype.block = function(elem, context, bodies) {
-  var body = bodies.block;
-
-  if (elem) {
-    body = elem;
-  }
-
-  if (body) {
-    return body(this, context);
-  }
-  return this;
-};
-
-Chunk.prototype.partial = function(elem, context, params) {
-  var ctx = context.stack, tempHead = ctx.head;
-  if (params){
-    //put the params context second to match what section does. {.} matches the current context without parameters
-    //remove head
-    context = context.rebase(ctx.tail);
-    //put params on
-    context = context.push(params);
-    //reattach the head
-    context = context.push(tempHead);
-  }
-  if (typeof elem === "function") {
-    return this.capture(elem, context, function(name, chunk) {
-      dust.load(name, chunk, context).end();
-    });
-  }
-  return dust.load(elem, this, context);
-};
-
-Chunk.prototype.helper = function(name, context, bodies, params) {
-  return dust.helpers[name](this, context, bodies, params);
-};
-
-Chunk.prototype.capture = function(body, context, callback) {
-  return this.map(function(chunk) {
-    var stub = new Stub(function(err, out) {
-      if (err) {
-        chunk.setError(err);
-      } else {
-        callback(out, chunk);
+  dust.stream = function(name, context) {
+    var stream = new Stream();
+    dust.nextTick(function() {
+      try {
+        dust.load(name, stream.head, Context.wrap(context, name)).end();
+      } catch (err) {
+        dust.onError(err, stream.head);
       }
     });
-    body(stub.head, context).end();
-  });
-};
+    return stream;
+  };
 
-Chunk.prototype.setError = function(err) {
-  this.error = err;
-  this.root.flush();
-  return this;
-};
+  dust.renderSource = function(source, context, callback) {
+    return dust.compileFn(source)(context, callback);
+  };
 
-function Tap(head, tail) {
-  this.head = head;
-  this.tail = tail;
-}
+  dust.compileFn = function(source, name) {
+    var tmpl = dust.loadSource(dust.compile(source, name));
+    return function(context, callback) {
+      var master = callback ? new Stub(callback) : new Stream();
+      dust.nextTick(function() {
+        if(typeof tmpl === 'function') {
+          tmpl(master.head, Context.wrap(context, name)).end();
+        }
+        else {
+          dust.onError(new Error('Template [' + name + '] cannot be resolved to a Dust function'));
+        }
+      });
+      return master;
+    };
+  };
 
-Tap.prototype.push = function(tap) {
-  return new Tap(tap, this);
-};
-
-Tap.prototype.go = function(value) {
-  var tap = this;
-
-  while(tap) {
-    value = tap.head(value);
-    tap = tap.tail;
-  }
-  return value;
-};
-
-var HCHARS = new RegExp(/[&<>\"\']/),
-    AMP    = /&/g,
-    LT     = /</g,
-    GT     = />/g,
-    QUOT   = /\"/g,
-    SQUOT  = /\'/g;
-
-dust.escapeHtml = function(s) {
-  if (typeof s === "string") {
-    if (!HCHARS.test(s)) {
-      return s;
+  dust.load = function(name, chunk, context) {
+    var tmpl = dust.cache[name];
+    if (tmpl) {
+      return tmpl(chunk, context);
+    } else {
+      if (dust.onLoad) {
+        return chunk.map(function(chunk) {
+          dust.onLoad(name, function(err, src) {
+            if (err) {
+              return chunk.setError(err);
+            }
+            if (!dust.cache[name]) {
+              dust.loadSource(dust.compile(src, name));
+            }
+            dust.cache[name](chunk, context).end();
+          });
+        });
+      }
+      return chunk.setError(new Error('Template Not Found: ' + name));
     }
-    return s.replace(AMP,'&amp;').replace(LT,'&lt;').replace(GT,'&gt;').replace(QUOT,'&quot;').replace(SQUOT, '&#39;');
-  }
-  return s;
-};
+  };
 
-var BS = /\\/g,
-    CR = /\r/g,
-    LS = /\u2028/g,
-    PS = /\u2029/g,
-    NL = /\n/g,
-    LF = /\f/g,
-    SQ = /'/g,
-    DQ = /"/g,
-    TB = /\t/g;
+  dust.loadSource = function(source, path) {
+    return eval(source);
+  };
 
-dust.escapeJs = function(s) {
-  if (typeof s === "string") {
-    return s
-      .replace(BS, '\\\\')
-      .replace(DQ, '\\"')
-      .replace(SQ, "\\'")
-      .replace(CR, '\\r')
-      .replace(LS, '\\u2028')
-      .replace(PS, '\\u2029')
-      .replace(NL, '\\n')
-      .replace(LF, '\\f')
-      .replace(TB, "\\t");
-  }
-  return s;
-};
-
-})(dust);
-
-if (typeof exports !== "undefined") {
-  //TODO: Remove the helpers from dust core in the next release.
-  dust.helpers = require("./dust-helpers").helpers;
-  if (typeof process !== "undefined") {
-      require('./server')(dust);
-  }
-  module.exports = dust;
-}
-(function(dust){
-
-/* make a safe version of console if it is not available
- * currently supporting:
- *   _console.log
- * */
-var _console = (typeof console !== 'undefined')? console: {
-  log: function(){
-     /* a noop*/
-   }
-};
-
-function isSelect(context) {
-  var value = context.current();
-  return typeof value === "object" && value.isSelect === true;   
-}
-
-function filter(chunk, context, bodies, params, filter) {
-  var params = params || {},
-      actual,
-      expected;
-  if (params.key) {
-    actual = helpers.tap(params.key, chunk, context);
-  } else if (isSelect(context)) {
-    actual = context.current().selectKey;
-    if (context.current().isResolved) {
-      filter = function() { return false; };
-    }
+  if (Array.isArray) {
+    dust.isArray = Array.isArray;
   } else {
-    throw "No key specified for filter and no key found in context from select statement";
-  }
-  expected = helpers.tap(params.value, chunk, context);
-  if (filter(expected, coerce(actual, params.type, context))) {
-    if (isSelect(context)) {
-      context.current().isResolved = true;
-    }
-    return chunk.render(bodies.block, context);
-  } else if (bodies['else']) {
-    return chunk.render(bodies['else'], context);
+    dust.isArray = function(arr) {
+      return Object.prototype.toString.call(arr) === '[object Array]';
+    };
   }
 
-  return chunk.write('');
-}
-
-function coerce (value, type, context) {
-  if (value) {
-    switch (type || typeof(value)) {
-      case 'number': return +value;
-      case 'string': return String(value);
-      case 'boolean': return Boolean(value);
-      case 'date': return new Date(value);
-      case 'context': return context.get(value);
+  dust.nextTick = (function() {
+    if (typeof process !== 'undefined') {
+      return process.nextTick;
+    } else {
+      return function(callback) {
+        setTimeout(callback,0);
+      };
     }
-  }
+  } )();
 
-  return value;
-}
-
-var helpers = {
-  
-  sep: function(chunk, context, bodies) {
-    if (context.stack.index === context.stack.of - 1) {
-      return chunk;
+  dust.isEmpty = function(value) {
+    if (dust.isArray(value) && !value.length) {
+      return true;
     }
-    return bodies.block(chunk, context);
-  },
+    if (value === 0) {
+      return false;
+    }
+    return (!value);
+  };
 
-  idx: function(chunk, context, bodies) {
-    return bodies.block(chunk, context.push(context.stack.index));
-  },
-  
-  contextDump: function(chunk, context, bodies) {
-    _console.log(JSON.stringify(context.stack));
-    return chunk;
-  },
-  
-  // Utility helping to resolve dust references in the given chunk
-  tap: function( input, chunk, context ){
-    // return given input if there is no dust reference to resolve
-    var output = input;
-    // dust compiles a string to function, if there are references
-    if( typeof input === "function"){
-      if( ( typeof input.isReference !== "undefined" ) && ( input.isReference === true ) ){ // just a plain function, not a dust `body` function
-        output = input();
-      } else {
-        output = '';
-        chunk.tap(function(data){
-          output += data;
-          return '';
-        }).render(input, context).untap();
-        if( output === '' ){
-          output = false;
+  // apply the filter chain and return the output string
+  dust.filter = function(string, auto, filters) {
+    if (filters) {
+      for (var i=0, len=filters.length; i<len; i++) {
+        var name = filters[i];
+        if (name === 's') {
+          auto = null;
+          dust.log('Using unescape filter on [' + string + ']', DEBUG);
+        }
+        else if (typeof dust.filters[name] === 'function') {
+          string = dust.filters[name](string);
+        }
+        else {
+          dust.onError(new Error('Invalid filter [' + name + ']'));
         }
       }
     }
-    return output;
-  },
+    // by default always apply the h filter, unless asked to unescape with |s
+    if (auto) {
+      string = dust.filters[auto](string);
+    }
+    return string;
+  };
+
+  dust.filters = {
+    h: function(value) { return dust.escapeHtml(value); },
+    j: function(value) { return dust.escapeJs(value); },
+    u: encodeURI,
+    uc: encodeURIComponent,
+    js: function(value) {
+      if (!JSON) {
+        dust.log('JSON is undefined.  JSON stringify has not been used on [' + value + ']', WARN);
+        return value;
+      } else {
+        return JSON.stringify(value);
+      }
+    },
+    jp: function(value) {
+      if (!JSON) {dust.log('JSON is undefined.  JSON parse has not been used on [' + value + ']', WARN);
+        return value;
+      } else {
+        return JSON.parse(value);
+      }
+    }
+  };
+
+  function Context(stack, global, blocks, templateName) {
+    this.stack  = stack;
+    this.global = global;
+    this.blocks = blocks;
+    this.templateName = templateName;
+  }
+
+  dust.makeBase = function(global) {
+    return new Context(new Stack(), global);
+  };
+
+  Context.wrap = function(context, name) {
+    if (context instanceof Context) {
+      return context;
+    }
+    return new Context(new Stack(context), {}, null, name);
+  };
 
   /**
-  if helper 
-   @param cond, either a string literal value or a dust reference
-                a string literal value, is enclosed in double quotes, e.g. cond="2>3"
-                a dust reference is also enclosed in double quotes, e.g. cond="'{val}'' > 3"
-    cond argument should evaluate to a valid javascript expression
-   **/
-
-  "if": function( chunk, context, bodies, params ){
-    if( params && params.cond ){
-      var cond = params.cond;
-      cond = this.tap(cond, chunk, context);
-      // eval expressions with given dust references
-      if( eval( cond ) ){
-       return chunk.render( bodies.block, context );
+   * Public API for getting a value from the context.
+   * @method get
+   * @param {string|array} path The path to the value. Supported formats are:
+   * 'key'
+   * 'path.to.key'
+   * '.path.to.key'
+   * ['path', 'to', 'key']
+   * ['key']
+   * @param {boolean} [cur=false] Boolean which determines if the search should be limited to the
+   * current context (true), or if get should search in parent contexts as well (false).
+   * @public
+   * @returns {string|object}
+   */
+  Context.prototype.get = function(path, cur) {
+    if (typeof path === 'string') {
+      if (path[0] === '.') {
+        cur = true;
+        path = path.substr(1);
       }
-      if( bodies['else'] ){
-       return chunk.render( bodies['else'], context );
+      path = path.split('.');
+    }
+    return this._get(cur, path);
+  };
+
+  /**
+   * Get a value from the context
+   * @method _get
+   * @param {boolean} cur Get only from the current context
+   * @param {array} down An array of each step in the path
+   * @private
+   * @return {string | object}
+   */
+  Context.prototype._get = function(cur, down) {
+    var ctx = this.stack,
+        i = 1,
+        value, first, len, ctxThis;
+    dust.log('Searching for reference [{' + down.join('.') + '}] in template [' + this.getTemplateName() + ']', DEBUG);
+    first = down[0];
+    len = down.length;
+
+    if (cur && len === 0) {
+      ctxThis = ctx;
+      ctx = ctx.head;
+    } else {
+      if (!cur) {
+        // Search up the stack for the first value
+        while (ctx) {
+          if (ctx.isObject) {
+            ctxThis = ctx.head;
+            value = ctx.head[first];
+            if (value !== undefined) {
+              break;
+            }
+          }
+          ctx = ctx.tail;
+        }
+
+        if (value !== undefined) {
+          ctx = value;
+        } else {
+          ctx = this.global ? this.global[first] : undefined;
+        }
+      } else {
+        // if scope is limited by a leading dot, don't search up the tree
+        ctx = ctx.head[first];
+      }
+
+      while (ctx && i < len) {
+        ctxThis = ctx;
+        ctx = ctx[down[i]];
+        i++;
       }
     }
-    // no condition
-    else {
-      _console.log( "No condition given in the if helper!" );
+
+    // Return the ctx or a function wrapping the application of the context.
+    if (typeof ctx === 'function') {
+      var fn = function() {
+        return ctx.apply(ctxThis, arguments);
+      };
+      fn.isFunction = true;
+      return fn;
+    } else {
+      if (ctx === undefined) {
+        dust.log('Cannot find the value for reference [{' + down.join('.') + '}] in template [' + this.getTemplateName() + ']');
+      }
+      return ctx;
     }
-    return chunk;
-  },
-  
-   /**
-   select/eq/lt/lte/gt/gte/default helper
-   @param key, either a string literal value or a dust reference
-                a string literal value, is enclosed in double quotes, e.g. key="foo"
-                a dust reference may or may not be enclosed in double quotes, e.g. key="{val}" and key=val are both valid
-   @param type (optiona), supported types are  number, boolean, string, date, context, defaults to string
-   **/
-  select: function(chunk, context, bodies, params) {
-    if( params && params.key){
-      // returns given input as output, if the input is not a dust reference, else does a context lookup
-      var key = this.tap(params.key, chunk, context);
-      return chunk.render(bodies.block, context.push({ isSelect: true, isResolved: false, selectKey: key }));
+  };
+
+  Context.prototype.getPath = function(cur, down) {
+    return this._get(cur, down);
+  };
+
+  Context.prototype.push = function(head, idx, len) {
+    return new Context(new Stack(head, this.stack, idx, len), this.global, this.blocks, this.getTemplateName());
+  };
+
+  Context.prototype.rebase = function(head) {
+    return new Context(new Stack(head), this.global, this.blocks, this.getTemplateName());
+  };
+
+  Context.prototype.current = function() {
+    return this.stack.head;
+  };
+
+  Context.prototype.getBlock = function(key, chk, ctx) {
+    if (typeof key === 'function') {
+      var tempChk = new Chunk();
+      key = key(tempChk, this).data.join('');
     }
-    // no key
-    else {
-      _console.log( "No key given in the select helper!" );
+
+    var blocks = this.blocks;
+
+    if (!blocks) {
+      dust.log('No blocks for context[{' + key + '}] in template [' + this.getTemplateName() + ']', DEBUG);
+      return;
     }
-    return chunk;
-  },
+    var len = blocks.length, fn;
+    while (len--) {
+      fn = blocks[len][key];
+      if (fn) {
+        return fn;
+      }
+    }
+  };
 
-  eq: function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return actual === expected; });
-  },
+  Context.prototype.shiftBlocks = function(locals) {
+    var blocks = this.blocks,
+        newBlocks;
 
-  lt: function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return actual < expected; });
-  },
+    if (locals) {
+      if (!blocks) {
+        newBlocks = [locals];
+      } else {
+        newBlocks = blocks.concat([locals]);
+      }
+      return new Context(this.stack, this.global, newBlocks, this.getTemplateName());
+    }
+    return this;
+  };
 
-  lte: function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return actual <= expected; });
-  },
-
-  gt: function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return actual > expected; });
-  },
-
-  gte: function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return actual >= expected; });
-  },
-
-  "default": function(chunk, context, bodies, params) {
-    return filter(chunk, context, bodies, params, function(expected, actual) { return true; });
-  },
-  size: function( chunk, context, bodies, params ) {
-    var subject = params.subject; 
-    var value   = 0;
-    if (!subject) { //undefined, "", 0
-      value = 0;  
-    } else if(dust.isArray(subject)) { //array 
-      value = subject.length;  
-    } else if (!isNaN(subject)) { //numeric values  
-      value = subject;  
-    } else if (Object(subject) === subject) { //object test
-      var nr = 0;  
-      for(var k in subject) if(Object.hasOwnProperty.call(subject,k)) nr++;  
-        value = nr;
-    } else { 
-      value = (subject + '').length; //any other value (strings etc.)  
-    } 
-    return chunk.write(value); 
+  Context.prototype.getTemplateName = function() {
+    return this.templateName;
   }
-};
 
-dust.helpers = helpers;
+  function Stack(head, tail, idx, len) {
+    this.tail = tail;
+    this.isObject = head && typeof head === 'object';
+    this.head = head;
+    this.index = idx;
+    this.of = len;
+  }
 
-})(typeof exports !== 'undefined' ? exports : getGlobal());
-(function(dust) {
+  function Stub(callback) {
+    this.head = new Chunk(this);
+    this.callback = callback;
+    this.out = '';
+  }
+
+  Stub.prototype.flush = function() {
+    var chunk = this.head;
+
+    while (chunk) {
+      if (chunk.flushable) {
+        this.out += chunk.data.join(''); //ie7 perf
+      } else if (chunk.error) {
+        this.callback(chunk.error);
+        dust.onError(new Error('Chunk error [' + chunk.error + '] thrown. Ceasing to render this template.'));
+        this.flush = function() {};
+        return;
+      } else {
+        return;
+      }
+      chunk = chunk.next;
+      this.head = chunk;
+    }
+    this.callback(null, this.out);
+  };
+
+  function Stream() {
+    this.head = new Chunk(this);
+  }
+
+  Stream.prototype.flush = function() {
+    var chunk = this.head;
+
+    while(chunk) {
+      if (chunk.flushable) {
+        this.emit('data', chunk.data.join('')); //ie7 perf
+      } else if (chunk.error) {
+        this.emit('error', chunk.error);
+        dust.onError(new Error('Chunk error [' + chunk.error + '] thrown. Ceasing to render this template.'));
+        this.flush = function() {};
+        return;
+      } else {
+        return;
+      }
+      chunk = chunk.next;
+      this.head = chunk;
+    }
+    this.emit('end');
+  };
+
+  Stream.prototype.emit = function(type, data) {
+    if (!this.events) {
+      dust.log('No events to emit', INFO);
+      return false;
+    }
+    var handler = this.events[type];
+    if (!handler) {
+      dust.log('Event type [' + type + '] does not exist', WARN);
+      return false;
+    }
+    if (typeof handler === 'function') {
+      handler(data);
+    } else if (dust.isArray(handler)) {
+      var listeners = handler.slice(0);
+      for (var i = 0, l = listeners.length; i < l; i++) {
+        listeners[i](data);
+      }
+    } else {
+      dust.onError(new Error('Event Handler [' + handler + '] is not of a type that is handled by emit'));
+    }
+  };
+
+  Stream.prototype.on = function(type, callback) {
+    if (!this.events) {
+      this.events = {};
+    }
+    if (!this.events[type]) {
+      dust.log('Event type [' + type + '] does not exist. Using just the specified callback.', WARN);
+      if(callback) {
+        this.events[type] = callback;
+      } else {
+        dust.log('Callback for type [' + type + '] does not exist. Listener not registered.', WARN);
+      }
+    } else if(typeof this.events[type] === 'function') {
+      this.events[type] = [this.events[type], callback];
+    } else {
+      this.events[type].push(callback);
+    }
+    return this;
+  };
+
+  Stream.prototype.pipe = function(stream) {
+    this.on('data', function(data) {
+      try {
+        stream.write(data, 'utf8');
+      } catch (err) {
+        dust.onError(err, stream.head);
+      }
+    }).on('end', function() {
+      try {
+        return stream.end();
+      } catch (err) {
+        dust.onError(err, stream.head);
+      }
+    }).on('error', function(err) {
+      stream.error(err);
+    });
+    return this;
+  };
+
+  function Chunk(root, next, taps) {
+    this.root = root;
+    this.next = next;
+    this.data = []; //ie7 perf
+    this.flushable = false;
+    this.taps = taps;
+  }
+
+  Chunk.prototype.write = function(data) {
+    var taps  = this.taps;
+
+    if (taps) {
+      data = taps.go(data);
+    }
+    this.data.push(data);
+    return this;
+  };
+
+  Chunk.prototype.end = function(data) {
+    if (data) {
+      this.write(data);
+    }
+    this.flushable = true;
+    this.root.flush();
+    return this;
+  };
+
+  Chunk.prototype.map = function(callback) {
+    var cursor = new Chunk(this.root, this.next, this.taps),
+        branch = new Chunk(this.root, cursor, this.taps);
+
+    this.next = branch;
+    this.flushable = true;
+    callback(branch);
+    return cursor;
+  };
+
+  Chunk.prototype.tap = function(tap) {
+    var taps = this.taps;
+
+    if (taps) {
+      this.taps = taps.push(tap);
+    } else {
+      this.taps = new Tap(tap);
+    }
+    return this;
+  };
+
+  Chunk.prototype.untap = function() {
+    this.taps = this.taps.tail;
+    return this;
+  };
+
+  Chunk.prototype.render = function(body, context) {
+    return body(this, context);
+  };
+
+  Chunk.prototype.reference = function(elem, context, auto, filters) {
+    if (typeof elem === 'function') {
+      elem.isFunction = true;
+      // Changed the function calling to use apply with the current context to make sure
+      // that "this" is wat we expect it to be inside the function
+      elem = elem.apply(context.current(), [this, context, null, {auto: auto, filters: filters}]);
+      if (elem instanceof Chunk) {
+        return elem;
+      }
+    }
+    if (!dust.isEmpty(elem)) {
+      return this.write(dust.filter(elem, auto, filters));
+    } else {
+      return this;
+    }
+  };
+
+  Chunk.prototype.section = function(elem, context, bodies, params) {
+    // anonymous functions
+    if (typeof elem === 'function') {
+      elem = elem.apply(context.current(), [this, context, bodies, params]);
+      // functions that return chunks are assumed to have handled the body and/or have modified the chunk
+      // use that return value as the current chunk and go to the next method in the chain
+      if (elem instanceof Chunk) {
+        return elem;
+      }
+    }
+    var body = bodies.block,
+        skip = bodies['else'];
+
+    // a.k.a Inline parameters in the Dust documentations
+    if (params) {
+      context = context.push(params);
+    }
+
+    /*
+    Dust's default behavior is to enumerate over the array elem, passing each object in the array to the block.
+    When elem resolves to a value or object instead of an array, Dust sets the current context to the value
+    and renders the block one time.
+    */
+    //non empty array is truthy, empty array is falsy
+    if (dust.isArray(elem)) {
+      if (body) {
+        var len = elem.length, chunk = this;
+        if (len > 0) {
+          // any custom helper can blow up the stack
+          // and store a flattened context, guard defensively
+          if(context.stack.head) {
+            context.stack.head['$len'] = len;
+          }
+          for (var i=0; i<len; i++) {
+            if(context.stack.head) {
+              context.stack.head['$idx'] = i;
+            }
+            chunk = body(chunk, context.push(elem[i], i, len));
+          }
+          if(context.stack.head) {
+            context.stack.head['$idx'] = undefined;
+            context.stack.head['$len'] = undefined;
+          }
+          return chunk;
+        }
+        else if (skip) {
+          return skip(this, context);
+        }
+      }
+    } else if (elem  === true) {
+     // true is truthy but does not change context
+      if (body) {
+        return body(this, context);
+      }
+    } else if (elem || elem === 0) {
+       // everything that evaluates to true are truthy ( e.g. Non-empty strings and Empty objects are truthy. )
+       // zero is truthy
+       // for anonymous functions that did not returns a chunk, truthiness is evaluated based on the return value
+      if (body) {
+        return body(this, context.push(elem));
+      }
+     // nonexistent, scalar false value, scalar empty string, null,
+     // undefined are all falsy
+    } else if (skip) {
+      return skip(this, context);
+    }
+    dust.log('Not rendering section (#) block in template [' + context.getTemplateName() + '], because above key was not found', DEBUG);
+    return this;
+  };
+
+  Chunk.prototype.exists = function(elem, context, bodies) {
+    var body = bodies.block,
+        skip = bodies['else'];
+
+    if (!dust.isEmpty(elem)) {
+      if (body) {
+        return body(this, context);
+      }
+    } else if (skip) {
+      return skip(this, context);
+    }
+    dust.log('Not rendering exists (?) block in template [' + context.getTemplateName() + '], because above key was not found', DEBUG);
+    return this;
+  };
+
+  Chunk.prototype.notexists = function(elem, context, bodies) {
+    var body = bodies.block,
+        skip = bodies['else'];
+
+    if (dust.isEmpty(elem)) {
+      if (body) {
+        return body(this, context);
+      }
+    } else if (skip) {
+      return skip(this, context);
+    }
+    dust.log('Not rendering not exists (^) block check in template [' + context.getTemplateName() + '], because above key was found', DEBUG);
+    return this;
+  };
+
+  Chunk.prototype.block = function(elem, context, bodies) {
+    var body = bodies.block;
+
+    if (elem) {
+      body = elem;
+    }
+
+    if (body) {
+      return body(this, context);
+    }
+    return this;
+  };
+
+  Chunk.prototype.partial = function(elem, context, params) {
+    var partialContext;
+    //put the params context second to match what section does. {.} matches the current context without parameters
+    // start with an empty context
+    partialContext = dust.makeBase(context.global);
+    partialContext.blocks = context.blocks;
+    if (context.stack && context.stack.tail){
+      // grab the stack(tail) off of the previous context if we have it
+      partialContext.stack = context.stack.tail;
+    }
+    if (params){
+      //put params on
+      partialContext = partialContext.push(params);
+    }
+
+    if(typeof elem === 'string') {
+      partialContext.templateName = elem;
+    }
+
+    //reattach the head
+    partialContext = partialContext.push(context.stack.head);
+
+    var partialChunk;
+    if (typeof elem === 'function') {
+      partialChunk = this.capture(elem, partialContext, function(name, chunk) {
+        partialContext.templateName = partialContext.templateName || name;
+        dust.load(name, chunk, partialContext).end();
+      });
+    } else {
+      partialChunk = dust.load(elem, this, partialContext);
+    }
+    return partialChunk;
+  };
+
+  Chunk.prototype.helper = function(name, context, bodies, params) {
+    var chunk = this;
+    // handle invalid helpers, similar to invalid filters
+    try {
+      if(dust.helpers[name]) {
+        return dust.helpers[name](chunk, context, bodies, params);
+      } else {
+        return dust.onError(new Error('Invalid helper [' + name + ']'), chunk);
+      }
+    } catch (err) {
+      return dust.onError(err, chunk);
+    }
+  };
+
+  Chunk.prototype.capture = function(body, context, callback) {
+    return this.map(function(chunk) {
+      var stub = new Stub(function(err, out) {
+        if (err) {
+          chunk.setError(err);
+        } else {
+          callback(out, chunk);
+        }
+      });
+      body(stub.head, context).end();
+    });
+  };
+
+  Chunk.prototype.setError = function(err) {
+    this.error = err;
+    this.root.flush();
+    return this;
+  };
+
+  function Tap(head, tail) {
+    this.head = head;
+    this.tail = tail;
+  }
+
+  Tap.prototype.push = function(tap) {
+    return new Tap(tap, this);
+  };
+
+  Tap.prototype.go = function(value) {
+    var tap = this;
+
+    while(tap) {
+      value = tap.head(value);
+      tap = tap.tail;
+    }
+    return value;
+  };
+
+  var HCHARS = new RegExp(/[&<>\"\']/),
+      AMP    = /&/g,
+      LT     = /</g,
+      GT     = />/g,
+      QUOT   = /\"/g,
+      SQUOT  = /\'/g;
+
+  dust.escapeHtml = function(s) {
+    if (typeof s === 'string') {
+      if (!HCHARS.test(s)) {
+        return s;
+      }
+      return s.replace(AMP,'&amp;').replace(LT,'&lt;').replace(GT,'&gt;').replace(QUOT,'&quot;').replace(SQUOT, '&#39;');
+    }
+    return s;
+  };
+
+  var BS = /\\/g,
+      FS = /\//g,
+      CR = /\r/g,
+      LS = /\u2028/g,
+      PS = /\u2029/g,
+      NL = /\n/g,
+      LF = /\f/g,
+      SQ = /'/g,
+      DQ = /"/g,
+      TB = /\t/g;
+
+  dust.escapeJs = function(s) {
+    if (typeof s === 'string') {
+      return s
+        .replace(BS, '\\\\')
+        .replace(FS, '\\/')
+        .replace(DQ, '\\"')
+        .replace(SQ, '\\\'')
+        .replace(CR, '\\r')
+        .replace(LS, '\\u2028')
+        .replace(PS, '\\u2029')
+        .replace(NL, '\\n')
+        .replace(LF, '\\f')
+        .replace(TB, '\\t');
+    }
+    return s;
+  };
+
+})(dust);
+
+if (typeof exports !== 'undefined') {
+  if (typeof process !== 'undefined') {
+    require('./server')(dust);
+  }
+  module.exports = dust;
+}
+var dustCompiler = (function(dust) {
 
 dust.compile = function(source, name) {
   try {
     var ast = filterAST(dust.parse(source));
     return compile(ast, name);
   }
-  catch(err)
+  catch (err)
   {
-    if(!err.line || !err.column) throw err;    
+    if (!err.line || !err.column) {
+      throw err;
+    }
     throw new SyntaxError(err.message + " At line : " + err.line + ", column : " + err.column);
   }
 };
@@ -782,11 +850,11 @@ dust.compile = function(source, name) {
 function filterAST(ast) {
   var context = {};
   return dust.filterNode(context, ast);
-}
+};
 
 dust.filterNode = function(context, node) {
   return dust.optimizers[node[0]](context, node);
-}
+};
 
 dust.optimizers = {
   body:      compactBuffers,
@@ -810,34 +878,43 @@ dust.optimizers = {
   key:       noop,
   path:      noop,
   literal:   noop,
-  comment:   nullify
-}
+  comment:   nullify,
+  line:      nullify,
+  col:       nullify
+};
 
 dust.pragmas = {
   esc: function(compiler, context, bodies, params) {
-    var old = compiler.auto;
-    if (!context) context = 'h';
+    var old = compiler.auto,
+        out;
+    if (!context) {
+      context = 'h';
+    }
     compiler.auto = (context === 's') ? '' : context;
-    var out = compileParts(compiler, bodies.block);
+    out = compileParts(compiler, bodies.block);
     compiler.auto = old;
     return out;
   }
-}
+};
 
 function visit(context, node) {
-  var out = [node[0]];
-  for (var i=1, len=node.length; i<len; i++) {
-    var res = dust.filterNode(context, node[i]);
-    if (res) out.push(res);
+  var out = [node[0]],
+      i, len, res;
+  for (i=1, len=node.length; i<len; i++) {
+    res = dust.filterNode(context, node[i]);
+    if (res) {
+      out.push(res);
+    }
   }
   return out;
-}
+};
 
 // Compacts consecutive buffer nodes into a single node
 function compactBuffers(context, node) {
-  var out = [node[0]], memo;
-  for (var i=1, len=node.length; i<len; i++) {
-    var res = dust.filterNode(context, node[i]);
+  var out = [node[0]],
+      memo, i, len, res;
+  for (i=1, len=node.length; i<len; i++) {
+    res = dust.filterNode(context, node[i]);
     if (res) {
       if (res[0] === 'buffer') {
         if (memo) {
@@ -853,7 +930,7 @@ function compactBuffers(context, node) {
     }
   }
   return out;
-}
+};
 
 var specialChars = {
   "s": " ",
@@ -863,9 +940,15 @@ var specialChars = {
   "rb": "}"
 };
 
-function convertSpecial(context, node) { return ['buffer', specialChars[node[1]]] }
-function noop(context, node) { return node }
-function nullify(){}
+function convertSpecial(context, node) {
+  return ['buffer', specialChars[node[1]]]
+};
+
+function noop(context, node) {
+  return node
+};
+
+function nullify(){};
 
 function compile(ast, name) {
   var context = {
@@ -884,13 +967,14 @@ function compile(ast, name) {
     + compileBodies(context)
     + "return body_0;"
     + "})();";
-}
+};
 
 function compileBlocks(context) {
   var out = [],
-      blocks = context.blocks;
+      blocks = context.blocks,
+      name;
 
-  for (var name in blocks) {
+  for (name in blocks) {
     out.push("'" + name + "':" + blocks[name]);
   }
   if (out.length) {
@@ -898,35 +982,38 @@ function compileBlocks(context) {
     return "var blocks={" + out.join(',') + "};";
   }
   return context.blocks = "";
-}
+};
 
 function compileBodies(context) {
   var out = [],
       bodies = context.bodies,
-      blx = context.blocks;
+      blx = context.blocks,
+      i, len;
 
-  for (var i=0, len=bodies.length; i<len; i++) {
+  for (i=0, len=bodies.length; i<len; i++) {
     out[i] = "function body_" + i + "(chk,ctx){"
       + blx + "return chk" + bodies[i] + ";}";
   }
   return out.join('');
-}
+};
 
 function compileParts(context, body) {
-  var parts = '';
-  for (var i=1, len=body.length; i<len; i++) {
+  var parts = '',
+      i, len;
+  for (i=1, len=body.length; i<len; i++) {
     parts += dust.compileNode(context, body[i]);
   }
   return parts;
-}
+};
 
 dust.compileNode = function(context, node) {
   return dust.nodes[node[0]](context, node);
-}
+};
 
 dust.nodes = {
   body: function(context, node) {
-    var id = context.index++, name = "body_" + id;
+    var id = context.index++,
+        name = "body_" + id;
     context.bodies[id] = compileParts(context, node);
     return name;
   },
@@ -1067,7 +1154,7 @@ dust.nodes = {
   },
 
   key: function(context, node) {
-    return "ctx.get(\"" + node[1] + "\")";
+    return "ctx._get(false, [\"" + node[1] + "\"])";
   },
 
   path: function(context, node) {
@@ -1076,15 +1163,18 @@ dust.nodes = {
         list = [];
 
     for (var i=0,len=keys.length; i<len; i++) {
-      list.push("\"" + keys[i] + "\"");
+      if (dust.isArray(keys[i]))
+        list.push(dust.compileNode(context, keys[i]));
+      else
+        list.push("\"" + keys[i] + "\"");
     }
-    return "ctx.getPath(" + current + ",[" + list.join(',') + "])";
+    return "ctx._get(" + current + ",[" + list.join(',') + "])";
   },
 
   literal: function(context, node) {
     return escape(node[1]);
   }
-}
+};
 
 function compileSection(context, node, cmd) {
   return "." + cmd + "("
@@ -1093,13 +1183,21 @@ function compileSection(context, node, cmd) {
     + dust.compileNode(context, node[4]) + ","
     + dust.compileNode(context, node[3])
     + ")";
-}
+};
 
 var escape = (typeof JSON === "undefined")
   ? function(str) { return "\"" + dust.escapeJs(str) + "\"" }
   : JSON.stringify;
 
-})(typeof exports !== 'undefined' ? exports : getGlobal());
+  return dust;
+
+});
+
+if (typeof exports !== 'undefined') {
+  module.exports = dustCompiler;
+} else {
+  dustCompiler(getGlobal());
+}
 (function(dust){
 
 var parser = (function(){
@@ -1155,7 +1253,7 @@ var parser = (function(){
         "special": parse_special,
         "identifier": parse_identifier,
         "number": parse_number,
-        "frac": parse_frac,
+        "float": parse_float,
         "integer": parse_integer,
         "path": parse_path,
         "key": parse_key,
@@ -1170,6 +1268,8 @@ var parser = (function(){
         "tag": parse_tag,
         "ld": parse_ld,
         "rd": parse_rd,
+        "lb": parse_lb,
+        "rb": parse_rb,
         "eol": parse_eol,
         "ws": parse_ws
       };
@@ -1269,7 +1369,7 @@ var parser = (function(){
           result1 = parse_part();
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, p) { return ["body"].concat(p) })(pos0.offset, pos0.line, pos0.column, result0);
+          result0 = (function(offset, line, column, p) { return ["body"].concat(p).concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -1322,8 +1422,9 @@ var parser = (function(){
                 result4 = parse_bodies();
                 if (result4 !== null) {
                   result5 = parse_end_tag();
+                  result5 = result5 !== null ? result5 : "";
                   if (result5 !== null) {
-                    result6 = (function(offset, line, column, t, b, e, n) { return t[1].text === n.text;})(pos.offset, pos.line, pos.column, result0, result3, result4, result5) ? "" : null;
+                    result6 = (function(offset, line, column, t, b, e, n) {if( (!n) || (t[1].text !== n.text) ) { throw new Error("Expected end tag for "+t[1].text+" but it was not found. At line : "+line+", column : " + column)} return true;})(pos.offset, pos.line, pos.column, result0, result3, result4, result5) ? "" : null;
                     if (result6 !== null) {
                       result0 = [result0, result1, result2, result3, result4, result5, result6];
                     } else {
@@ -1355,7 +1456,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, t, b, e, n) { e.push(["param", ["literal", "block"], b]); t.push(e); return t })(pos0.offset, pos0.line, pos0.column, result0[0], result0[3], result0[4], result0[5]);
+          result0 = (function(offset, line, column, t, b, e, n) { e.push(["param", ["literal", "block"], b]); t.push(e); return t.concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[0], result0[3], result0[4], result0[5]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -1402,7 +1503,7 @@ var parser = (function(){
             pos = clone(pos1);
           }
           if (result0 !== null) {
-            result0 = (function(offset, line, column, t) { t.push(["bodies"]); return t })(pos0.offset, pos0.line, pos0.column, result0[0]);
+            result0 = (function(offset, line, column, t) { t.push(["bodies"]); return t.concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[0]);
           }
           if (result0 === null) {
             pos = clone(pos0);
@@ -1884,7 +1985,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, n, f) { return ["reference", n, f] })(pos0.offset, pos0.line, pos0.column, result0[1], result0[2]);
+          result0 = (function(offset, line, column, n, f) { return ["reference", n, f].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[1], result0[2]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -1897,7 +1998,7 @@ var parser = (function(){
       }
       
       function parse_partial() {
-        var result0, result1, result2, result3, result4, result5, result6, result7;
+        var result0, result1, result2, result3, result4, result5, result6, result7, result8;
         var pos0, pos1, pos2;
         
         reportFailures++;
@@ -1926,42 +2027,53 @@ var parser = (function(){
             }
           }
           if (result1 !== null) {
-            pos2 = clone(pos);
-            result2 = parse_key();
-            if (result2 !== null) {
-              result2 = (function(offset, line, column, k) {return ["literal", k]})(pos2.offset, pos2.line, pos2.column, result2);
-            }
-            if (result2 === null) {
-              pos = clone(pos2);
-            }
-            if (result2 === null) {
-              result2 = parse_inline();
+            result2 = [];
+            result3 = parse_ws();
+            while (result3 !== null) {
+              result2.push(result3);
+              result3 = parse_ws();
             }
             if (result2 !== null) {
-              result3 = parse_context();
+              pos2 = clone(pos);
+              result3 = parse_key();
               if (result3 !== null) {
-                result4 = parse_params();
+                result3 = (function(offset, line, column, k) {return ["literal", k]})(pos2.offset, pos2.line, pos2.column, result3);
+              }
+              if (result3 === null) {
+                pos = clone(pos2);
+              }
+              if (result3 === null) {
+                result3 = parse_inline();
+              }
+              if (result3 !== null) {
+                result4 = parse_context();
                 if (result4 !== null) {
-                  result5 = [];
-                  result6 = parse_ws();
-                  while (result6 !== null) {
-                    result5.push(result6);
-                    result6 = parse_ws();
-                  }
+                  result5 = parse_params();
                   if (result5 !== null) {
-                    if (input.charCodeAt(pos.offset) === 47) {
-                      result6 = "/";
-                      advance(pos, 1);
-                    } else {
-                      result6 = null;
-                      if (reportFailures === 0) {
-                        matchFailed("\"/\"");
-                      }
+                    result6 = [];
+                    result7 = parse_ws();
+                    while (result7 !== null) {
+                      result6.push(result7);
+                      result7 = parse_ws();
                     }
                     if (result6 !== null) {
-                      result7 = parse_rd();
+                      if (input.charCodeAt(pos.offset) === 47) {
+                        result7 = "/";
+                        advance(pos, 1);
+                      } else {
+                        result7 = null;
+                        if (reportFailures === 0) {
+                          matchFailed("\"/\"");
+                        }
+                      }
                       if (result7 !== null) {
-                        result0 = [result0, result1, result2, result3, result4, result5, result6, result7];
+                        result8 = parse_rd();
+                        if (result8 !== null) {
+                          result0 = [result0, result1, result2, result3, result4, result5, result6, result7, result8];
+                        } else {
+                          result0 = null;
+                          pos = clone(pos1);
+                        }
                       } else {
                         result0 = null;
                         pos = clone(pos1);
@@ -1995,7 +2107,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, s, n, c, p) { var key = (s ===">")? "partial" : s; return [key, n, c, p] })(pos0.offset, pos0.line, pos0.column, result0[1], result0[2], result0[3], result0[4]);
+          result0 = (function(offset, line, column, s, n, c, p) { var key = (s ===">")? "partial" : s; return [key, n, c, p].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[1], result0[3], result0[4], result0[5]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -2129,7 +2241,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, k) { return ["special", k] })(pos0.offset, pos0.line, pos0.column, result0[2]);
+          result0 = (function(offset, line, column, k) { return ["special", k].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[2]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -2177,7 +2289,7 @@ var parser = (function(){
         
         reportFailures++;
         pos0 = clone(pos);
-        result0 = parse_frac();
+        result0 = parse_float();
         if (result0 === null) {
           result0 = parse_integer();
         }
@@ -2194,7 +2306,7 @@ var parser = (function(){
         return result0;
       }
       
-      function parse_frac() {
+      function parse_float() {
         var result0, result1, result2, result3;
         var pos0, pos1;
         
@@ -2245,7 +2357,7 @@ var parser = (function(){
         }
         reportFailures--;
         if (reportFailures === 0 && result0 === null) {
-          matchFailed("frac");
+          matchFailed("float");
         }
         return result0;
       }
@@ -2333,12 +2445,12 @@ var parser = (function(){
         }
         if (result0 !== null) {
           result0 = (function(offset, line, column, k, d) {
-            d = d[0]; 
+            d = d[0];
             if (k && d) {
               d.unshift(k);
-              return [false, d];
+              return [false, d].concat([['line', line], ['col', column]]);
             }
-            return [true, d];
+            return [true, d].concat([['line', line], ['col', column]]);
           })(pos0.offset, pos0.line, pos0.column, result0[0], result0[1]);
         }
         if (result0 === null) {
@@ -2382,9 +2494,9 @@ var parser = (function(){
           if (result0 !== null) {
             result0 = (function(offset, line, column, d) {
               if (d.length > 0) {
-                return [true, d[0]];
+                return [true, d[0]].concat([['line', line], ['col', column]]);
               }
-              return [true, []] 
+              return [true, []].concat([['line', line], ['col', column]]);
             })(pos0.offset, pos0.line, pos0.column, result0[1]);
           }
           if (result0 === null) {
@@ -2462,23 +2574,16 @@ var parser = (function(){
       
       function parse_array() {
         var result0, result1, result2;
-        var pos0, pos1, pos2, pos3;
+        var pos0, pos1, pos2, pos3, pos4;
         
         reportFailures++;
         pos0 = clone(pos);
         pos1 = clone(pos);
         pos2 = clone(pos);
         pos3 = clone(pos);
-        if (input.charCodeAt(pos.offset) === 91) {
-          result0 = "[";
-          advance(pos, 1);
-        } else {
-          result0 = null;
-          if (reportFailures === 0) {
-            matchFailed("\"[\"");
-          }
-        }
+        result0 = parse_lb();
         if (result0 !== null) {
+          pos4 = clone(pos);
           if (/^[0-9]/.test(input.charAt(pos.offset))) {
             result2 = input.charAt(pos.offset);
             advance(pos, 1);
@@ -2506,15 +2611,16 @@ var parser = (function(){
             result1 = null;
           }
           if (result1 !== null) {
-            if (input.charCodeAt(pos.offset) === 93) {
-              result2 = "]";
-              advance(pos, 1);
-            } else {
-              result2 = null;
-              if (reportFailures === 0) {
-                matchFailed("\"]\"");
-              }
-            }
+            result1 = (function(offset, line, column, n) {return n.join('')})(pos4.offset, pos4.line, pos4.column, result1);
+          }
+          if (result1 === null) {
+            pos = clone(pos4);
+          }
+          if (result1 === null) {
+            result1 = parse_identifier();
+          }
+          if (result1 !== null) {
+            result2 = parse_rb();
             if (result2 !== null) {
               result0 = [result0, result1, result2];
             } else {
@@ -2530,7 +2636,7 @@ var parser = (function(){
           pos = clone(pos3);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, a) {return a.join('')})(pos2.offset, pos2.line, pos2.column, result0[1]);
+          result0 = (function(offset, line, column, a) {return a; })(pos2.offset, pos2.line, pos2.column, result0[1]);
         }
         if (result0 === null) {
           pos = clone(pos2);
@@ -2697,7 +2803,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column) { return ["literal", ""] })(pos0.offset, pos0.line, pos0.column);
+          result0 = (function(offset, line, column) { return ["literal", ""].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -2741,7 +2847,7 @@ var parser = (function(){
             pos = clone(pos1);
           }
           if (result0 !== null) {
-            result0 = (function(offset, line, column, l) { return ["literal", l] })(pos0.offset, pos0.line, pos0.column, result0[1]);
+            result0 = (function(offset, line, column, l) { return ["literal", l].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[1]);
           }
           if (result0 === null) {
             pos = clone(pos0);
@@ -2794,7 +2900,7 @@ var parser = (function(){
               pos = clone(pos1);
             }
             if (result0 !== null) {
-              result0 = (function(offset, line, column, p) { return ["body"].concat(p) })(pos0.offset, pos0.line, pos0.column, result0[1]);
+              result0 = (function(offset, line, column, p) { return ["body"].concat(p).concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[1]);
             }
             if (result0 === null) {
               pos = clone(pos0);
@@ -2855,7 +2961,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, e, w) { return ["format", e, w.join('')] })(pos0.offset, pos0.line, pos0.column, result0[0], result0[1]);
+          result0 = (function(offset, line, column, e, w) { return ["format", e, w.join('')].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[0], result0[1]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -2877,7 +2983,7 @@ var parser = (function(){
           if (result1 !== null) {
             pos3 = clone(pos);
             reportFailures++;
-            result2 = parse_eol();
+            result2 = parse_comment();
             reportFailures--;
             if (result2 === null) {
               result2 = "";
@@ -2888,7 +2994,7 @@ var parser = (function(){
             if (result2 !== null) {
               pos3 = clone(pos);
               reportFailures++;
-              result3 = parse_comment();
+              result3 = parse_eol();
               reportFailures--;
               if (result3 === null) {
                 result3 = "";
@@ -2949,7 +3055,7 @@ var parser = (function(){
               if (result1 !== null) {
                 pos3 = clone(pos);
                 reportFailures++;
-                result2 = parse_eol();
+                result2 = parse_comment();
                 reportFailures--;
                 if (result2 === null) {
                   result2 = "";
@@ -2960,7 +3066,7 @@ var parser = (function(){
                 if (result2 !== null) {
                   pos3 = clone(pos);
                   reportFailures++;
-                  result3 = parse_comment();
+                  result3 = parse_eol();
                   reportFailures--;
                   if (result3 === null) {
                     result3 = "";
@@ -3007,7 +3113,7 @@ var parser = (function(){
             result0 = null;
           }
           if (result0 !== null) {
-            result0 = (function(offset, line, column, b) { return ["buffer", b.join('')] })(pos0.offset, pos0.line, pos0.column, result0);
+            result0 = (function(offset, line, column, b) { return ["buffer", b.join('')].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0);
           }
           if (result0 === null) {
             pos = clone(pos0);
@@ -3290,7 +3396,7 @@ var parser = (function(){
           pos = clone(pos1);
         }
         if (result0 !== null) {
-          result0 = (function(offset, line, column, c) { return ["comment", c.join('')] })(pos0.offset, pos0.line, pos0.column, result0[1]);
+          result0 = (function(offset, line, column, c) { return ["comment", c.join('')].concat([['line', line], ['col', column]]) })(pos0.offset, pos0.line, pos0.column, result0[1]);
         }
         if (result0 === null) {
           pos = clone(pos0);
@@ -3303,44 +3409,40 @@ var parser = (function(){
       }
       
       function parse_tag() {
-        var result0, result1, result2, result3, result4, result5, result6;
+        var result0, result1, result2, result3, result4, result5, result6, result7;
         var pos0, pos1, pos2;
         
         pos0 = clone(pos);
         result0 = parse_ld();
         if (result0 !== null) {
-          if (/^[#?^><+%:@\/~%]/.test(input.charAt(pos.offset))) {
-            result1 = input.charAt(pos.offset);
-            advance(pos, 1);
-          } else {
-            result1 = null;
-            if (reportFailures === 0) {
-              matchFailed("[#?^><+%:@\\/~%]");
-            }
+          result1 = [];
+          result2 = parse_ws();
+          while (result2 !== null) {
+            result1.push(result2);
+            result2 = parse_ws();
           }
           if (result1 !== null) {
-            result2 = [];
-            result3 = parse_ws();
-            while (result3 !== null) {
-              result2.push(result3);
-              result3 = parse_ws();
+            if (/^[#?^><+%:@\/~%]/.test(input.charAt(pos.offset))) {
+              result2 = input.charAt(pos.offset);
+              advance(pos, 1);
+            } else {
+              result2 = null;
+              if (reportFailures === 0) {
+                matchFailed("[#?^><+%:@\\/~%]");
+              }
             }
             if (result2 !== null) {
-              pos1 = clone(pos);
-              pos2 = clone(pos);
-              reportFailures++;
-              result4 = parse_rd();
-              reportFailures--;
-              if (result4 === null) {
-                result4 = "";
-              } else {
-                result4 = null;
-                pos = clone(pos2);
+              result3 = [];
+              result4 = parse_ws();
+              while (result4 !== null) {
+                result3.push(result4);
+                result4 = parse_ws();
               }
-              if (result4 !== null) {
+              if (result3 !== null) {
+                pos1 = clone(pos);
                 pos2 = clone(pos);
                 reportFailures++;
-                result5 = parse_eol();
+                result5 = parse_rd();
                 reportFailures--;
                 if (result5 === null) {
                   result5 = "";
@@ -3349,48 +3451,48 @@ var parser = (function(){
                   pos = clone(pos2);
                 }
                 if (result5 !== null) {
-                  if (input.length > pos.offset) {
-                    result6 = input.charAt(pos.offset);
-                    advance(pos, 1);
+                  pos2 = clone(pos);
+                  reportFailures++;
+                  result6 = parse_eol();
+                  reportFailures--;
+                  if (result6 === null) {
+                    result6 = "";
                   } else {
                     result6 = null;
-                    if (reportFailures === 0) {
-                      matchFailed("any character");
-                    }
+                    pos = clone(pos2);
                   }
                   if (result6 !== null) {
-                    result4 = [result4, result5, result6];
+                    if (input.length > pos.offset) {
+                      result7 = input.charAt(pos.offset);
+                      advance(pos, 1);
+                    } else {
+                      result7 = null;
+                      if (reportFailures === 0) {
+                        matchFailed("any character");
+                      }
+                    }
+                    if (result7 !== null) {
+                      result5 = [result5, result6, result7];
+                    } else {
+                      result5 = null;
+                      pos = clone(pos1);
+                    }
                   } else {
-                    result4 = null;
+                    result5 = null;
                     pos = clone(pos1);
                   }
                 } else {
-                  result4 = null;
+                  result5 = null;
                   pos = clone(pos1);
                 }
-              } else {
-                result4 = null;
-                pos = clone(pos1);
-              }
-              if (result4 !== null) {
-                result3 = [];
-                while (result4 !== null) {
-                  result3.push(result4);
-                  pos1 = clone(pos);
-                  pos2 = clone(pos);
-                  reportFailures++;
-                  result4 = parse_rd();
-                  reportFailures--;
-                  if (result4 === null) {
-                    result4 = "";
-                  } else {
-                    result4 = null;
-                    pos = clone(pos2);
-                  }
-                  if (result4 !== null) {
+                if (result5 !== null) {
+                  result4 = [];
+                  while (result5 !== null) {
+                    result4.push(result5);
+                    pos1 = clone(pos);
                     pos2 = clone(pos);
                     reportFailures++;
-                    result5 = parse_eol();
+                    result5 = parse_rd();
                     reportFailures--;
                     if (result5 === null) {
                       result5 = "";
@@ -3399,44 +3501,59 @@ var parser = (function(){
                       pos = clone(pos2);
                     }
                     if (result5 !== null) {
-                      if (input.length > pos.offset) {
-                        result6 = input.charAt(pos.offset);
-                        advance(pos, 1);
+                      pos2 = clone(pos);
+                      reportFailures++;
+                      result6 = parse_eol();
+                      reportFailures--;
+                      if (result6 === null) {
+                        result6 = "";
                       } else {
                         result6 = null;
-                        if (reportFailures === 0) {
-                          matchFailed("any character");
-                        }
+                        pos = clone(pos2);
                       }
                       if (result6 !== null) {
-                        result4 = [result4, result5, result6];
+                        if (input.length > pos.offset) {
+                          result7 = input.charAt(pos.offset);
+                          advance(pos, 1);
+                        } else {
+                          result7 = null;
+                          if (reportFailures === 0) {
+                            matchFailed("any character");
+                          }
+                        }
+                        if (result7 !== null) {
+                          result5 = [result5, result6, result7];
+                        } else {
+                          result5 = null;
+                          pos = clone(pos1);
+                        }
                       } else {
-                        result4 = null;
+                        result5 = null;
                         pos = clone(pos1);
                       }
                     } else {
-                      result4 = null;
+                      result5 = null;
                       pos = clone(pos1);
                     }
-                  } else {
-                    result4 = null;
-                    pos = clone(pos1);
                   }
-                }
-              } else {
-                result3 = null;
-              }
-              if (result3 !== null) {
-                result4 = [];
-                result5 = parse_ws();
-                while (result5 !== null) {
-                  result4.push(result5);
-                  result5 = parse_ws();
+                } else {
+                  result4 = null;
                 }
                 if (result4 !== null) {
-                  result5 = parse_rd();
+                  result5 = [];
+                  result6 = parse_ws();
+                  while (result6 !== null) {
+                    result5.push(result6);
+                    result6 = parse_ws();
+                  }
                   if (result5 !== null) {
-                    result0 = [result0, result1, result2, result3, result4, result5];
+                    result6 = parse_rd();
+                    if (result6 !== null) {
+                      result0 = [result0, result1, result2, result3, result4, result5, result6];
+                    } else {
+                      result0 = null;
+                      pos = clone(pos0);
+                    }
                   } else {
                     result0 = null;
                     pos = clone(pos0);
@@ -3492,6 +3609,36 @@ var parser = (function(){
           result0 = null;
           if (reportFailures === 0) {
             matchFailed("\"}\"");
+          }
+        }
+        return result0;
+      }
+      
+      function parse_lb() {
+        var result0;
+        
+        if (input.charCodeAt(pos.offset) === 91) {
+          result0 = "[";
+          advance(pos, 1);
+        } else {
+          result0 = null;
+          if (reportFailures === 0) {
+            matchFailed("\"[\"");
+          }
+        }
+        return result0;
+      }
+      
+      function parse_rb() {
+        var result0;
+        
+        if (input.charCodeAt(pos.offset) === 93) {
+          result0 = "]";
+          advance(pos, 1);
+        } else {
+          result0 = null;
+          if (reportFailures === 0) {
+            matchFailed("\"]\"");
           }
         }
         return result0;
