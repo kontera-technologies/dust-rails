@@ -37,7 +37,7 @@ module Dust
 
       def evaluate(scope, locals, &block)
         template_root = Dust.config.template_root
-        template_name = file.split(template_root).last.split('.',2).first
+        template_name = file.split(template_root).last.split('.')[0...-2].join('.')
         compiled = Source.precompile(data, template_name)
         if Dust.config.autoload
           compiled = "dust.loadSource(#{compiled.inspect});"
