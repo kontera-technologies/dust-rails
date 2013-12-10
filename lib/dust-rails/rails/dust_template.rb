@@ -4,18 +4,25 @@ require 'execjs'
 module Dust
   module Rails
 
+
     module Source
-      def self.path
-        @path ||= File.expand_path('../../../../vendor/dustjs/lib/dust.js', __FILE__)
+
+      def self.precompile(data, template)
+        @precompile = context.call("dust.compile", data, template)
       end
 
-      def self.contents
-        @contents ||= File.read(path)
-      end
+      private
+        def self.path
+          @path = File.expand_path('../../../../vendor/dustjs/lib/dust.js', __FILE__)
+        end
 
-      def self.context
-        @context ||= ExecJS.compile(contents)
-      end
+        def self.contents
+          @contents = File.read(path)
+        end
+
+        def self.context
+          @context = ExecJS.compile(contents)
+        end
 
     end
 
@@ -31,7 +38,10 @@ module Dust
       def evaluate(scope, locals, &block)
         template_root = Dust.config.template_root
         template_name = file.split(template_root).last.split('.',2).first
-        Source.context.call("dust.compile", data, template_name)
+        compiled = Source.precompile(data, template_name)
+        <<-TEMPLATE
+            dust.loadSource(#{compiled.inspect});
+        TEMPLATE
       end
     end
   end

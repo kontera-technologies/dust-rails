@@ -4,7 +4,7 @@
 
 This gem adds the Dust template and a corresponding assets engine to the asset pipeline in Rails => 3.1 applications.
 
-For detailed information about Dust, visit <http://akdubya.github.com/dustjs/>
+For detailed information about Dust, visit <http://github.com/linkedin/dustjs/>
 
 
 
@@ -59,6 +59,8 @@ Using `require_tree` is recommended if you want to require all the template file
 	/* app/assets/javascripts/application.js */
 	
 	//= require dust-core
+	//= require dust-helpers
+	//= require dust-filters-secure
 	//= require_tree ./templates
 	...
 	dust.render("demo", {name: "Fred", count: 10}, function(err, out) {
