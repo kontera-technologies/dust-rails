@@ -9,7 +9,7 @@ module Dust
 
   class Config
     attr_accessor :template_root
-    attr_accessor :auto_load
+    attr_accessor :autoload
 
     def initialize
       @template_root = DEFAULT_TEMPLATE_ROOT
