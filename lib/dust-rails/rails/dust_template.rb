@@ -39,9 +39,10 @@ module Dust
         template_root = Dust.config.template_root
         template_name = file.split(template_root).last.split('.',2).first
         compiled = Source.precompile(data, template_name)
-        <<-TEMPLATE
-            dust.loadSource(#{compiled.inspect});
-        TEMPLATE
+        if Dust.config.autoload
+          compiled = "dust.loadSource(#{compiled.inspect});"
+        end
+        return compiled
       end
     end
   end

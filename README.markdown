@@ -52,6 +52,17 @@ If you want to change the default root path of template files, add following con
     end
 ```
 
+If you don't want to automatically load the dust template, add the following configuration into application.rb:
+
+```ruby
+    # config/application.rb
+    module YourApp
+        class Application < Rails::Application
+            config.dust.autoload = false
+        end
+    end
+```
+
 In your javascript files, require `dust-core` and your own template files.
 Using `require_tree` is recommended if you want to require all the template files at once.
 
