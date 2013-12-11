@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    dust-rails (0.5.0)
+    dust-rails (0.5.1)
       execjs
       rails (> 3.1.0)
       tilt
