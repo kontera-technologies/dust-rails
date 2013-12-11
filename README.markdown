@@ -63,6 +63,25 @@ If you don't want to automatically load the dust template, add the following con
     end
 ```
 
+If you want to use AMD style templates, add the following configuration into application.rb: 
+
+```ruby
+    # config/application.rb
+    module YourApp
+        class Application < Rails::Application
+            config.dust.use_amd = true
+        end
+    end
+```
+and then you can depend on the template in AMD by using:
+```javascript
+  define(['dust!demos/demo2'], function() {
+  	dust.render("demos/demo2", {name: "Fred", count: 10}, function(err, out) {
+ 	  	console.log(out);
+  	});
+  });
+```
+
 In your javascript files, require `dust-core` and your own template files.
 Using `require_tree` is recommended if you want to require all the template files at once.
 

@@ -10,10 +10,12 @@ module Dust
   class Config
     attr_accessor :template_root
     attr_accessor :autoload
+    attr_accessor :use_amd
 
     def initialize
       @template_root = DEFAULT_TEMPLATE_ROOT
       @autoload = true
+      @use_amd = false
     end
   end
 

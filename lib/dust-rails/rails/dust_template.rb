@@ -42,6 +42,9 @@ module Dust
         if Dust.config.autoload
           compiled = "dust.loadSource(#{compiled.inspect});"
         end
+        if Dust.config.use_amd
+          compiled = "define('dust!#{template_name}',[], function() { #{compiled} });"
+        end
         return compiled
       end
     end
