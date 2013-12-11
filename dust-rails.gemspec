@@ -5,9 +5,9 @@ require "dust-rails/version"
 Gem::Specification.new do |s|
   s.name        = "dust-rails"
   s.version     = Dust::Rails::VERSION
-  s.authors     = ["Hoseong Hwang"]
-  s.email       = ["thefron@wafflestudio.com"]
-  s.homepage    = "https://github.com/thefron/dust-rails"
+  s.authors     = ["Hoseong Hwang", "Ido Abramovich"]
+  s.email       = ["thefron@wafflestudio.com", "ido@kontera.com"]
+  s.homepage    = "https://github.com/kontera-technologies/dust-rails"
   s.summary     = %q{Use dust.js with rails}
   s.description = %q{This gem makes it easy to use dust.js with rails.}
 
